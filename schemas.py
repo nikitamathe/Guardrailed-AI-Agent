@@ -1,23 +1,23 @@
-from typing import Dict, Any, Optional
+from typing import Optional
 from pydantic import BaseModel, Field
 
-# Final Agent Response Envelope
+
+class RestartServiceSchema(BaseModel):
+    service_name: str = Field(..., min_length=1)
+    force: bool = Field(default=False)
+
+
+class GetMemoryUsageSchema(BaseModel):
+    unit: str = Field(..., pattern="^(KB|MB|GB)$")
+
+
+class BlockIPSchema(BaseModel):
+    ip_address: str = Field(..., pattern=r"^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$")
+    reason: str = Field(default="Security threat")
+
+
 class AgentResponse(BaseModel):
-    status: str  # "success", "blocked", "tool_execution", "error"
+    status: str
     message: str
     tool_used: Optional[str] = None
-    tool_output: Optional[Any] = None
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-
-# Tool Schema 1: Service Management
-class RestartServiceSchema(BaseModel):
-    service_name: str = Field(description="Target service name e.g. nginx, docker")
-    force: bool = Field(default=False, description="Forced restart flag")
-
-# Tool Schema 2: System Metrics (Restricted via regex constraint)
-class GetMemoryUsageSchema(BaseModel):
-    unit: str = Field(
-        default="MB", 
-        pattern="^(KB|MB|GB)$", 
-        description="Accepted units: KB, MB, or GB"
-    )
+    tool_output: Optional[str] = None

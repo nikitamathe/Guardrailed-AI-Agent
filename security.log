@@ -1,0 +1,8 @@
+2026-08-17 10:14:02 [AUTH] Failed password for root from 192.168.1.105 port 22 ssh2
+2026-08-17 10:14:05 [AUTH] Failed password for root from 192.168.1.105 port 22 ssh2
+2026-08-17 10:14:09 [AUTH] Failed password for root from 192.168.1.105 port 22 ssh2
+2026-08-17 10:14:15 [ALERT] Potential SSH Brute Force attack detected from IP: 192.168.1.105
+2026-08-17 11:22:01 [NGINX] 404 GET /admin/config.php from 10.0.0.45
+2026-08-17 11:22:03 [NGINX] 403 POST /api/v1/login - SQL injection attempt detected: ' OR 1=1 --
+2026-08-17 12:05:40 [SYSTEM] Service 'nginx' restarted by admin nikita
+2026-08-17 12:30:11 [AUTH] Accepted publickey for nikita from 192.168.1.20 port 50432 ssh2
