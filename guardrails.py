@@ -1,8 +1,10 @@
 import re
-from typing import Tuple
+from typing import Tuple, Dict, Any
+
 
 class SecurityGuardrail:
     """Deterministic security filter for input sanitization."""
+
     def __init__(self):
         # List of critical bash/system commands to block entirely
         self.blocklist_patterns = [
@@ -16,22 +18,28 @@ class SecurityGuardrail:
             r"iptables\s+-F",  # Flush firewall entirely
         ]
 
-    def validate_input(self, user_input: str) -> Tuple[bool, str]:
-        """Checks input against blocklist and common sanitization rules."""
-        cleaned_input = user_input.strip()
+    def inspect_input(self, user_input: str) -> Dict[str, Any]:
+        """Compatibility method used by the app layer and agent layer."""
+        cleaned_input = (user_input or "").strip()
 
-        # 1. Null/Empty Check
         if not cleaned_input:
-            return False, "Query cannot be empty."
+            return {"is_blocked": True, "reason": "Query cannot be empty."}
 
-        # 2. Pattern Matching against dangerous system commands
         for pattern in self.blocklist_patterns:
             if re.search(pattern, cleaned_input, re.IGNORECASE):
-                return False, f"Input contains potentially destructive command pattern: '{pattern}'"
+                return {
+                    "is_blocked": True,
+                    "reason": f"Input contains potentially destructive command pattern: '{pattern}'",
+                }
 
-        # 3. Input length check (prevent buffer issues/resource exhaustion)
         if len(cleaned_input) > 2048:
-            return False, "Input exceeds maximum character length (2048)."
+            return {"is_blocked": True, "reason": "Input exceeds maximum character length (2048)."}
 
-        # Input is valid and safe for agent processing
-        return True, "Safe"
+        return {"is_blocked": False, "reason": "Safe"}
+
+    def validate_input(self, user_input: str) -> Tuple[bool, str]:
+        """Checks input against blocklist and common sanitization rules."""
+        result = self.inspect_input(user_input)
+        if result["is_blocked"]:
+            return False, result["reason"]
+        return True, result["reason"]
