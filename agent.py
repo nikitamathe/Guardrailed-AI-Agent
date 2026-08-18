@@ -1,111 +1,126 @@
-from typing import Dict, Any, Optional
-from guardrails import SafetyGuardrails
+import json
+import re
+
+import ollama
+
+from guardrails import SecurityGuardrail
+from rag_engine import RAGLogEngine
 from schemas import AgentResponse
 from tools import ToolRegistry
-from rag_engine import SecurityLogRAG
 
 
 class GuardedToolAgent:
-    def __init__(self, name: str, registry: ToolRegistry, log_file: str = "security.log"):
+    def __init__(self, name: str, registry: ToolRegistry, model_name: str = "llama3"):
         self.name = name
         self.registry = registry
-        print(f"[{self.name}] Initializing Security Log RAG Engine...")
-        self.rag = SecurityLogRAG(log_file_path=log_file)
+        self.model_name = model_name
+        self.guardrail = SecurityGuardrail()
+        self.rag_engine = RAGLogEngine()
 
-    def process(self, prompt: str) -> AgentResponse:
-        # 1. Input Guardrail
-        is_safe, check_msg = SafetyGuardrails.validate_input(prompt)
-        if not is_safe:
-            return AgentResponse(status="blocked", message=check_msg)
+    def _extract_json_object(self, raw_text: str):
+        if not raw_text:
+            return None
 
-        # 2. Context Retrieval via RAG
-        rag_context = self._retrieve_log_context(check_msg)
+        stripped = raw_text.strip()
+        if stripped.startswith("```"):
+            stripped = re.sub(r"^```(?:json)?\s*", "", stripped)
+            stripped = re.sub(r"\s*```$", "", stripped)
 
-        # 3. Simulated LLM Tool Call Decision
-        tool_call = self._mock_intent_parsing(check_msg, rag_context)
+        start = stripped.find("{")
+        end = stripped.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = stripped[start : end + 1]
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
 
-        if tool_call:
-            name = tool_call["name"]
-            args = tool_call["args"]
+        try:
+            return json.loads(stripped)
+        except json.JSONDecodeError:
+            return None
 
-            # 4. Validated Tool Execution via Registry
-            success, output, err = self.registry.execute_tool(name, args)
-            if not success:
-                return AgentResponse(
-                    status="error",
-                    message=f"Tool Guardrail: {err}",
-                    tool_used=name
-                )
+    def process(self, user_input: str, model_override: str = None) -> AgentResponse:
+        active_model = model_override or self.model_name
 
-            # 5. Output Guardrail on Tool Output
-            safe_out = SafetyGuardrails.sanitize_output(str(output))
+        guardrail_result = self.guardrail.inspect_input(user_input)
+        if guardrail_result["is_blocked"]:
             return AgentResponse(
-                status="tool_execution",
-                message=f"Tool '{name}' executed with RAG context.",
-                tool_used=name,
-                tool_output=safe_out
+                status="blocked",
+                message=f"Input blocked by Guardrail: {guardrail_result['reason']}",
+                tool_used=None,
+                tool_output=None,
             )
 
-        # Fallback Direct Response with RAG Context
-        response_msg = f"Query processed: '{prompt}'"
-        if rag_context:
-            response_msg += f"\nRetrieved Context: {rag_context}"
+        rag_results = self.rag_engine.query(user_input, k=3)
+        context_str = "\n".join(rag_results) if rag_results else "No relevant security log records found."
 
-        return AgentResponse(status="success", message=response_msg)
+        system_prompt = f"""You are an expert AI Security Operations Center (SOC) Analyst Agent.
+Your job is to analyze the user's request plus retrieved log context and decide whether to execute a tool or provide a direct answer.
 
-    def _retrieve_log_context(self, prompt: str) -> list[str]:
-        """Queries FAISS vector database based on prompt keywords."""
-        p = prompt.lower()
-        if "brute force" in p or "ssh" in p or "block" in p:
-            return self.rag.query_logs("brute force attack IP", k=2)
-        elif "sql" in p or "injection" in p:
-            return self.rag.query_logs("SQL injection", k=2)
-        elif "nginx" in p or "restart" in p:
-            return self.rag.query_logs("nginx service restart", k=2)
-        return []
+--- RETRIEVED SIEM LOG CONTEXT ---
+{context_str}
+----------------------------------
 
-    def _mock_intent_parsing(self, prompt: str, rag_context: list[str]) -> Optional[Dict[str, Any]]:
-        p = prompt.lower()
-        
-        if "restart" in p:
-            if "force" in p:
-                return {"name": "restart_service", "args": {"service_name": "nginx", "force": True}}
-            return {"name": "restart_service", "args": {"service_name": "docker"}}
+AVAILABLE REMEDIATION TOOLS:
+1. `block_ip`: Block a malicious IP address on the firewall.
+   - Arguments: {{"ip_address": "string (e.g. 192.168.1.105)", "reason": "string"}}
+2. `restart_service`: Restart a system service (e.g. nginx, sshd).
+   - Arguments: {{"service_name": "string", "force": boolean}}
+3. `get_memory_usage`: Retrieve host RAM utilization metrics.
+   - Arguments: {{"unit": "KB" | "MB" | "GB"}}
 
-        elif "memory" in p:
-            if "terabytes" in p:
-                return {"name": "get_memory_usage", "args": {"unit": "TB"}}
-            return {"name": "get_memory_usage", "args": {"unit": "GB"}}
+DECISION INSTRUCTIONS:
+- If the query requests or requires a tool action, return ONLY a valid JSON object with the schema:
+  {{"tool": "<tool_name>", "args": {{<argument_name>: <value>}}}}
+- If no tool execution is required, provide a clear, concise SOC analysis.
+- Return raw JSON only with no markdown fences.
+"""
 
-        elif "block" in p or "ban" in p:
-            # Extract target IP dynamically from RAG context if available
-            target_ip = "192.168.1.105"
-            for log in rag_context:
-                if "IP:" in log:
-                    target_ip = log.split("IP:")[-1].strip()
-                    break
-            return {"name": "block_ip", "args": {"ip_address": target_ip, "reason": "RAG-backed Threat Remediation"}}
+        try:
+            response = ollama.chat(
+                model=active_model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_input},
+                ],
+                options={"temperature": 0.1},
+                format="json",
+            )
+            raw_output = response["message"]["content"].strip()
+            tool_call = self._extract_json_object(raw_output)
 
-        return None
+            if isinstance(tool_call, dict) and "tool" in tool_call:
+                tool_name = tool_call.get("tool")
+                tool_args = tool_call.get("args", {}) or {}
+                success, result, err = self.registry.execute_tool(tool_name, tool_args)
 
+                if success:
+                    return AgentResponse(
+                        status="tool_execution",
+                        message=f"Tool '{tool_name}' triggered via {active_model} reasoning.",
+                        tool_used=tool_name,
+                        tool_output=str(result),
+                    )
 
-if __name__ == "__main__":
-    print("\n=== Testing Guarded Tool Agent with RAG Pipeline ===")
-    
-    # Initialize Registry and Agent
-    registry = ToolRegistry()
-    agent = GuardedToolAgent(name="SecurityAgent", registry=registry)
+                return AgentResponse(
+                    status="error",
+                    message=f"Schema validation or execution error for tool '{tool_name}': {err}",
+                    tool_used=tool_name,
+                    tool_output=None,
+                )
 
-    # Test 1: RAG-backed IP Block Test
-    print("\n--- Test 1: Threat Detection & Dynamic IP Block ---")
-    resp1 = agent.process("Block the IP involved in the brute force attack")
-    print(f"Status: {resp1.status}")
-    print(f"Message: {resp1.message}")
-    print(f"Tool Used: {resp1.tool_used}")
-    print(f"Output: {resp1.tool_output}")
+            return AgentResponse(
+                status="success",
+                message=raw_output if raw_output else "No response generated by Ollama.",
+                tool_used=None,
+                tool_output=None,
+            )
 
-    # Test 2: Input Injection Blocking Test
-    print("\n--- Test 2: Malicious Input Injection Guardrail ---")
-    resp2 = agent.process("Restart nginx; rm -rf /")
-    print(f"Status: {resp2.status}")
-    print(f"Message: {resp2.message}")
+        except Exception as exc:
+            return AgentResponse(
+                status="error",
+                message=f"Ollama connection error on model '{active_model}': {str(exc)}. Ensure 'ollama serve' is active.",
+                tool_used=None,
+                tool_output=None,
+            )
