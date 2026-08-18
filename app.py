@@ -80,7 +80,7 @@ with st.sidebar:
     st.progress(ram_usage / 100)
 
     st.divider()
-    if st.button("🔄 Trigger Simulated Attack Event", use_container_width=True):
+    if st.button("🔄 Trigger Simulated Attack Event", width="stretch"):
         new_ip = f"192.168.1.{random.randint(110, 250)}"
         st.session_state.logs.insert(0, {
             "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -116,7 +116,7 @@ with tab_ops:
         df_logs = pd.DataFrame(st.session_state.logs)
         st.dataframe(
             df_logs,
-            use_container_width=True,
+            width="stretch",
             column_config={
                 "level": st.column_config.TextColumn("Severity"),
                 "event": st.column_config.TextColumn("Log Message", width="large")
@@ -150,7 +150,7 @@ with tab_ai:
 
         with st.chat_message("assistant"):
             with st.spinner("Analyzing context via RAG & applying Guardrails..."):
-                response = agent.process(user_prompt)
+                response = agent.process(user_prompt, model_override=ollama_model)
 
                 if response.status == "blocked":
                     st.error(f"🚨 **Guardrail Blocked Input:** {response.message}")
@@ -185,7 +185,7 @@ with tab_ai:
 with tab_soar:
     st.subheader("🔥 Active Firewall Blocklist (`iptables` / OS Network Rules)")
     df_bans = pd.DataFrame(st.session_state.banned_ips)
-    st.dataframe(df_bans, use_container_width=True, hide_index=True)
+    st.dataframe(df_bans, width="stretch", hide_index=True)
 
     col_unban, col_manual = st.columns(2)
     with col_unban:
