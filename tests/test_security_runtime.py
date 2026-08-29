@@ -20,7 +20,7 @@ class SecurityRuntimeContractTests(unittest.TestCase):
     def test_guardrail_exposes_inspect_input_alias(self):
         guardrail = SecurityGuardrail()
 
-        safe = guardrail.inspect_input("Investigate failed SSH attempts from 192.168.1.105")
+        safe = guardrail.inspect_input("Investigate failed SSH attempts from 8.8.8.8")
         self.assertFalse(safe["is_blocked"])
 
         blocked = guardrail.inspect_input("rm -rf /")
@@ -32,14 +32,14 @@ class SecurityRuntimeContractTests(unittest.TestCase):
 
         with mock.patch("agent.ollama.chat", return_value={
             "message": {
-                "content": '{"tool": "block_ip", "args": {"ip_address": "192.168.1.105", "reason": "SSH brute force"}}'
+                "content": '{"tool": "block_ip", "args": {"ip_address": "8.8.8.8", "reason": "SSH brute force"}}'
             }
         }):
-            response = agent.process("Investigate brute force login from 192.168.1.105")
+            response = agent.process("Investigate brute force login from 8.8.8.8")
 
         self.assertEqual(response.status, "tool_execution")
         self.assertEqual(response.tool_used, "block_ip")
-        self.assertIn("192.168.1.105", response.tool_output)
+        self.assertIn("8.8.8.8", response.tool_output)
 
 
 if __name__ == "__main__":
