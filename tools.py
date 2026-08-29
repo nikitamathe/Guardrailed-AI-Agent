@@ -11,9 +11,13 @@ from schemas import ALLOWED_SERVICES, RestartServiceSchema, GetMemoryUsageSchema
 
 
 class ToolRegistry:
-    def __init__(self):
+    def __init__(self, audit_callback: Optional[Callable[[Dict[str, Any]], None]] = None):
         self._tools: Dict[str, Tuple[Type[BaseModel], Callable]] = {}
+        self._audit_callback = audit_callback
         self._register_default_tools()
+
+    def set_audit_callback(self, audit_callback: Optional[Callable[[Dict[str, Any]], None]] = None) -> None:
+        self._audit_callback = audit_callback
 
     def register_tool(self, name: str, schema: Type[BaseModel], func: Callable):
         self._tools[name] = (schema, func)
@@ -40,14 +44,20 @@ class ToolRegistry:
         try:
             validated_args = schema(**kwargs)
         except ValidationError as e:
+            self._emit_audit("tool.execution", "validation_failed", name, kwargs, "", str(e))
             raise ValueError(f"Schema validation error: {e.errors()}") from e
 
         try:
             result = func(**validated_args.model_dump())
+            self._emit_audit("tool.execution", "success", name, kwargs, str(result), "")
+            return str(result)
         except TypeError:
             result = func(validated_args)
-
-        return str(result)
+            self._emit_audit("tool.execution", "success", name, kwargs, str(result), "")
+            return str(result)
+        except Exception as exc:
+            self._emit_audit("tool.execution", "failed", name, kwargs, "", str(exc))
+            raise
 
     def execute_tool(self, name: str, raw_args: Dict[str, Any]) -> Tuple[bool, Any, str]:
         if name not in self._tools:
@@ -58,6 +68,21 @@ class ToolRegistry:
             return True, result, ""
         except ValueError as exc:
             return False, None, str(exc)
+
+    def _emit_audit(self, stage: str, status: str, tool: str, args: Any, result: str, error: str) -> None:
+        if self._audit_callback is None:
+            return
+        try:
+            self._audit_callback({
+                "stage": stage,
+                "status": status,
+                "tool": tool,
+                "args": args if isinstance(args, dict) else {},
+                "result": result,
+                "error": error,
+            })
+        except Exception:
+            pass
 
 
 # Concrete Tool Handlers

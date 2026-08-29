@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import ollama
 
+from audit import HashChainedAuditLog
 from guardrails import SecurityGuardrail
 from rag_engine import RAGLogEngine
 from schemas import AgentResponse
@@ -61,6 +62,7 @@ class GuardedToolAgent:
         grounding_threshold: float = 0.25,
         rag_top_k: int = 3,
         redact_output: bool = True,
+        audit_log: Optional[HashChainedAuditLog] = None,
     ):
         self.name = name
         self.registry = registry
@@ -74,10 +76,53 @@ class GuardedToolAgent:
         self.rag_top_k = max(1, int(rag_top_k))
         self.redact_output = bool(redact_output)
 
-        self.guardrail = SecurityGuardrail()
         self.rag_engine = RAGLogEngine()
+        self.audit_log = audit_log if audit_log is not None else HashChainedAuditLog(
+            sanitizer=self.rag_engine.sanitize
+        )
+        self.guardrail = SecurityGuardrail(audit_callback=self._guardrail_audit_cb)
+        self.registry.set_audit_callback(self._registry_audit_cb)
         self._pending_actions: Dict[str, Dict[str, Any]] = {}
         self._executor = ThreadPoolExecutor(max_workers=2)
+
+    def _guardrail_audit_cb(self, event: Dict[str, Any]) -> None:
+        """Adapt the guardrail's dict event into the structured audit log."""
+        try:
+            self.audit_log.append(
+                stage="input_guardrail",
+                status="blocked" if event.get("status") == "blocked" else "passed",
+                action="guardrail.inspect",
+                details={
+                    "reason": event.get("reason"),
+                    "matched_patterns": event.get("matched_patterns", []),
+                    "normalized_input": event.get("normalized_input"),
+                },
+            )
+        except Exception:
+            logger.exception("Failed to write guardrail audit event")
+
+    def _registry_audit_cb(self, event: Dict[str, Any]) -> None:
+        """Adapt the ToolRegistry execution event into the audit log."""
+        try:
+            self.audit_log.append(
+                stage=event.get("stage", "tool.execution"),
+                status=event.get("status", "unknown"),
+                action=event.get("tool"),
+                details={
+                    "tool": event.get("tool"),
+                    "args": event.get("args"),
+                    "result": event.get("result"),
+                    "error": event.get("error"),
+                },
+            )
+        except Exception:
+            logger.exception("Failed to write registry audit event")
+
+    def _audit(self, stage: str, status: str, action: Optional[str] = None, **details: Any) -> None:
+        try:
+            self.audit_log.append(stage=stage, status=status, action=action, details=details or None)
+        except Exception:
+            logger.exception("Failed to write audit event: %s/%s", stage, status)
 
     def _extract_json_object(self, raw_text: str):
         if not raw_text:
@@ -112,6 +157,10 @@ class GuardedToolAgent:
         try:
             active_model = self._resolve_model(model_override)
         except ValueError as exc:
+            self._audit(
+                "agent.process", "error", action="model.resolve",
+                model_override=model_override, reason=str(exc),
+            )
             return AgentResponse(
                 status="error",
                 message=f"{exc}",
@@ -121,6 +170,10 @@ class GuardedToolAgent:
 
         guardrail_result = self.guardrail.inspect_input(user_input)
         if guardrail_result["is_blocked"]:
+            self._audit(
+                "agent.process", "blocked", action="guardrail.gate",
+                user_input=user_input, reason=guardrail_result["reason"],
+            )
             return AgentResponse(
                 status="blocked",
                 message=f"Input blocked by Guardrail: {guardrail_result['reason']}",
@@ -159,6 +212,10 @@ class GuardedToolAgent:
 
             return self._answer_free_text(self._clean_free_text(raw_output), context_str)
 
+        self._audit(
+            "agent.process", "error", action="llm.call",
+            model=active_model, reason="LLM request failed after retries",
+        )
         return AgentResponse(
             status="error",
             message=(
@@ -173,9 +230,17 @@ class GuardedToolAgent:
         """Approve a staged destructive action; executes it if approved."""
         pending = self._pending_actions.pop(action_id, None)
         if pending is None:
+            self._audit(
+                "tool.approval", "unknown", action_id=action_id, decision="approve",
+            )
             return False, None, "Unknown or already-handled action id."
         success, result, err = self.registry.execute_tool(pending["tool"], pending["args"])
         logger.info("Approved action %s for tool '%s' (success=%s)", action_id, pending["tool"], success)
+        self._audit(
+            "tool.approval", "approved" if success else "failed",
+            action=pending["tool"], action_id=action_id,
+            tool=pending["tool"], args=pending["args"], result=str(result), error=err,
+        )
         return success, result, err
 
     def reject(self, action_id: str) -> bool:
@@ -183,6 +248,7 @@ class GuardedToolAgent:
         if self._pending_actions.pop(action_id, None) is None:
             return False
         logger.info("Rejected action %s", action_id)
+        self._audit("tool.approval", "rejected", action_id=action_id, decision="reject")
         return True
 
     def _resolve_model(self, override: Optional[str]) -> str:
@@ -259,6 +325,10 @@ DECISION INSTRUCTIONS:
 
         if tool_name in self.destructive_tools:
             if dry_run:
+                self._audit(
+                    "tool.execution", "dry_run", action=tool_name,
+                    tool=tool_name, args=tool_args, reason="dry-run requested",
+                )
                 return AgentResponse(
                     status="dry_run",
                     message=(
@@ -276,6 +346,10 @@ DECISION INSTRUCTIONS:
                     "args": tool_args,
                     "model": active_model,
                 }
+                self._audit(
+                    "tool.approval", "pending", action=tool_name,
+                    action_id=action_id, tool=tool_name, args=tool_args,
+                )
                 return AgentResponse(
                     status="pending_approval",
                     message=(

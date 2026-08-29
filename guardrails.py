@@ -132,6 +132,15 @@ class SecurityGuardrail:
                 normalized,
             )
 
+        self._emit_audit(
+            {
+                "stage": "input_guardrail",
+                "status": "passed",
+                "reason": "Safe",
+                "matched_patterns": [],
+                "normalized_input": normalized,
+            }
+        )
         return {
             "is_blocked": False,
             "reason": "Safe",

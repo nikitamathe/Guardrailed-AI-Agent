@@ -86,10 +86,15 @@ class RAGLogEngine:
         if not lines:
             raise ValueError(f"Log file '{self.log_file_path}' is empty; nothing to index.")
 
+        # PII sanitization at ingestion: mask IPs / usernames / emails before the
+        # document is embedded, indexed and persisted to disk, so raw PII never
+        # lands in the FAISS artifacts (.pkl / .faiss) or the index metadata.
+        sanitized_lines = [self.sanitize(line) for line in lines]
+
         source = str(Path(self.log_file_path).resolve())
         docs = [
-            Document(page_content=line, metadata={"source": source, "line": idx})
-            for idx, line in enumerate(lines, start=1)
+            Document(page_content=content, metadata={"source": source, "line": idx})
+            for idx, content in enumerate(sanitized_lines, start=1)
         ]
 
         splitter = RecursiveCharacterTextSplitter(
