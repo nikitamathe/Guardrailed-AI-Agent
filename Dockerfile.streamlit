@@ -1,17 +1,38 @@
 FROM python:3.12-slim
 
-WORKDIR /app
+# --------------------------------------------------------------------------- #
+# Guardrailed AI SOC Dashboard (Streamlit) — hardened production image
+#   - runs as unprivileged non-root user
+#   - read-only networking: only consumes the engine REST API over HTTP
+# --------------------------------------------------------------------------- #
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
     API_BASE_URL=http://soc-engine:8000
 
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+WORKDIR /app
 
-COPY . .
+# Create an unprivileged runtime user with a fixed uid/gid.
+RUN groupadd --system --gid 10002 streamlit && \
+    useradd --system --uid 10002 --gid 10002 --home-dir /tmp --shell /usr/sbin/nologin streamlit
+
+# Install dependencies first (cache layer) before copying code.
+COPY requirements.txt ./
+RUN pip install --upgrade pip && \
+    pip install -r requirements.txt
+
+# Copy application code (caches are excluded by .dockerignore).
+COPY --chown=streamlit:streamlit . .
+
+# Streamlit writes state/config under HOME -> point it at the /tmp tmpfs.
+ENV HOME=/tmp
+
+USER streamlit:streamlit
 
 EXPOSE 8501
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8501/_stcore/health', timeout=5).status==200 else 1)"
 
 CMD ["streamlit", "run", "app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]

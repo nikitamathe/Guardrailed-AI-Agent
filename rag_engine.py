@@ -35,7 +35,7 @@ class RAGLogEngine:
 
     def __init__(
         self,
-        log_file_path: str = "security.log",
+        log_file_path: Optional[str] = None,
         embedding_model: str = "all-MiniLM-L6-v2",
         chunk_size: int = 512,
         chunk_overlap: int = 64,
@@ -43,13 +43,20 @@ class RAGLogEngine:
         similarity_threshold: Optional[float] = 1.0,
         allow_dangerous_deserialization: bool = True,
     ):
+        # Container-friendly overrides: the log file (read-only mount) and the
+        # FAISS index directory (writable volume) can be redirected via env vars.
+        log_file_path = log_file_path or os.environ.get("RAG_LOG_FILE", "security.log")
+        persist_directory = persist_directory or os.environ.get(
+            "RAG_PERSIST_DIR",
+            os.path.join(
+                os.path.dirname(os.path.abspath(log_file_path)), ".faiss_index"
+            ),
+        )
         self.log_file_path = log_file_path
         self.embedding_model = embedding_model
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
-        self.persist_directory = persist_directory or os.path.join(
-            os.path.dirname(os.path.abspath(log_file_path)), ".faiss_index"
-        )
+        self.persist_directory = persist_directory
         self.similarity_threshold = similarity_threshold
         self.allow_dangerous_deserialization = allow_dangerous_deserialization
 

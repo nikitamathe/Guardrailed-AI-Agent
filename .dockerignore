@@ -1,0 +1,29 @@
+# Version control
+.git
+.gitignore
+
+# Python caches / build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+*.whl
+
+# Runtime data (persisted via volumes; must not be baked into the image)
+.faiss_index/
+audit/
+security.log
+*.log
+
+# Local tooling / docs (not required at runtime)
+docs/
+*.md
+!README.md
+install.sh
+
+# Environment / editor files
+.env
+.env.*
+.idea/
+.vscode/
+.DS_Store

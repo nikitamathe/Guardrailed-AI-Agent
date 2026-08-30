@@ -95,10 +95,10 @@ class HashChainedAuditLog:
 
     def __init__(
         self,
-        log_path: str = "audit/audit.log",
+        log_path: Optional[str] = None,
         sanitizer: Optional[Callable[[str], str]] = None,
     ):
-        self.log_path = log_path
+        self.log_path = log_path or os.environ.get("AUDIT_LOG_PATH", "audit/audit.log")
         self.sanitizer = sanitizer
         self._lock = threading.Lock()
         self._fh: Optional[Any] = None

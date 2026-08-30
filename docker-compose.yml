@@ -1,14 +1,21 @@
-version: "3.9"
-
 services:
   ollama:
     image: ollama/ollama:latest
     container_name: guardrailed-ollama
-    ports:
-      - "11434:11434"
+    # No host ports published: only reachable from the backend network.
+    networks:
+      - backend
     volumes:
       - ollama_data:/root/.ollama
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   soc-engine:
     build:
@@ -16,13 +23,38 @@ services:
       dockerfile: Dockerfile
     container_name: guardrailed-soc-engine
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
+    networks:
+      - backend   # reach Ollama
+      - frontend  # serve the Streamlit UI
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_MODEL: llama3
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3}
+      AUDIT_LOG_PATH: /var/lib/guardrailed/audit/audit.log
+      RAG_PERSIST_DIR: /var/lib/guardrailed/index
+      RAG_LOG_FILE: /var/lib/guardrailed/security.log
+    # security.log is an input: bind-mount it READ-ONLY so the engine can read
+    # the SIEM stream but never mutate it.
+    volumes:
+      - ./security.log:/var/lib/guardrailed/security.log:ro
+      - audit_data:/var/lib/guardrailed/audit
+      - index_data:/var/lib/guardrailed/index
+      - home_data:/var/lib/guardrailed/home
     ports:
+      # Host exposure kept minimal: only the engine REST port is reachable
+      # externally (for /health & diagnostics). Ollama stays fully internal.
       - "8000:8000"
     restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
 
   streamlit:
     build:
@@ -30,12 +62,35 @@ services:
       dockerfile: Dockerfile.streamlit
     container_name: guardrailed-streamlit
     depends_on:
-      - soc-engine
+      soc-engine:
+        condition: service_started
+    networks:
+      - frontend
     environment:
       API_BASE_URL: http://soc-engine:8000
     ports:
       - "8501:8501"
     restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
 
 volumes:
   ollama_data:
+  audit_data:
+  index_data:
+  home_data:
+
+networks:
+  backend:
+    driver: bridge
+    internal: true   # isolated: no external internet unless explicitly allowed
+  frontend:
+    driver: bridge
+    internal: true
